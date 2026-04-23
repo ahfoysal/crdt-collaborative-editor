@@ -3,3 +3,5 @@ dist/
 *.log
 .DS_Store
 .vite/
+mvp/server/oplog.json
+mvp/server/oplog.json.tmp

@@ -42,8 +42,34 @@ npm run dev
 Then open **http://localhost:5173** in two browser tabs. Type in one,
 watch the other update. Disconnect/reconnect works — new tabs replay the op log.
 
-## Known MVP limitations
+## M2 additions — offline + persistence
 
-- Op log is in-memory only (lost on server restart).
+- **Client IndexedDB persistence** (`client/src/persistence.ts`). Every op the
+  client sees — local or remote — is appended to an IDB object store plus a
+  `meta` store that tracks the last server-assigned `seq` and a stable
+  `clientId`. On boot we replay the log into a fresh RGA before touching the
+  network, so reloads and cold starts are instant and fully readable offline.
+- **Offline op queue + reconnect merge** (`client/src/sync.ts`). When the WS
+  isn't OPEN, local ops are persisted to IDB (marked `local:true`) and buffered
+  in an in-memory outbox. On reconnect we send `{type:'hello', lastSeq}` — the
+  server streams back every op with a higher seq as a single `sync` — then we
+  flush the outbox. Try it: click **Go offline**, type a bunch, click **Go
+  online**, watch the queue drain.
+- **Server-side durable op log** (`server/src/oplog.ts`). Ops are appended to a
+  JSON file (`oplog.json`) with a monotonic per-server `seq`. The log is
+  deduplicated by RGA `OpId` (`{c,l}`) so a client retrying the same op after a
+  flaky disconnect doesn't get a second seq. Kill and restart the server — the
+  next client to connect with `lastSeq=0` gets the full history replayed.
+
+### Tests
+
+```bash
+cd mvp/server && npm test    # OpLog dedup + persistence round-trip
+cd mvp/client && npm test    # RGA convergence + SyncClient offline/reconnect
+```
+
+## Known limitations
+
 - Caret may jump on large remote edits (no cursor-position CRDT yet).
-- Plaintext only; no formatting, presence, or offline queue — those come in M2–M4.
+- Plaintext only; no formatting, presence, or WebRTC — those come in M3–M4.
+- Op log file grows unbounded; no compaction / snapshotting yet.

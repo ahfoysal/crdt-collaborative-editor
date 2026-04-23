@@ -24,7 +24,18 @@
       .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
       .dot.ok { background: #22c55e; }
       .dot.bad { background: #ef4444; }
-    </style>
+      .controls { margin-top: 10px; display: flex; gap: 8px; }
+      .controls button {
+        font: inherit;
+        padding: 4px 10px;
+        border: 1px solid #888;
+        background: transparent;
+        color: inherit;
+        border-radius: 4px;
+        cursor: pointer;
+      }
+      .controls button:hover { background: rgba(128,128,128,0.15); }
+</style>
   </head>
   <body>
     <h1>CRDT MVP — RGA Collaborative Editor</h1>
@@ -33,6 +44,10 @@
     </div>
     <textarea id="editor" spellcheck="false" autofocus></textarea>
     <div class="status"><span id="statusDot" class="dot bad"></span><span id="statusText">connecting…</span></div>
+    <div class="controls">
+      <button id="offlineBtn" type="button">Go offline</button>
+      <button id="resetBtn" type="button" title="Clear IndexedDB and reload">Reset local state</button>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
