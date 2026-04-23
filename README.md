@@ -1,4 +1,4 @@
-# 04 — CRDT Collaborative Editor
+# CRDT Collaborative Editor
 
 **Stack:** TypeScript · Vite · React 19 · Yjs-style custom CRDT (RGA then Y.Text-compatible) · `ws` / `uWebSockets.js` server · IndexedDB (idb-keyval) · WebRTC (simple-peer) · ProseMirror for rich text
 
@@ -7,6 +7,23 @@ Google Docs-grade: rich-text CRDT, multi-cursor presence, offline-first, WebRTC 
 
 ## MVP (1 night)
 Two browser tabs syncing plaintext via WebSocket using RGA CRDT.
+
+## MVP Status — shipped
+
+The 1-night MVP lives in [`mvp/`](./mvp). Custom RGA CRDT (per-character
+`{clientId, lamport}` IDs, tombstone deletes, lamport+clientId tie-break for
+concurrent inserts), `ws` relay server, Vite + vanilla-TS client with a
+textarea bound to the CRDT.
+
+### Demo
+```bash
+# terminal 1
+cd mvp/server && npm install && npm run server
+# terminal 2
+cd mvp/client && npm install && npm run dev
+```
+Open http://localhost:5173 in two tabs and type — edits replicate live.
+See [`mvp/README.md`](./mvp/README.md) for details.
 
 ## Milestones
 - **M1 (Week 1):** RGA plaintext sync across 2 clients via WS
