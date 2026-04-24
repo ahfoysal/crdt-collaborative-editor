@@ -67,7 +67,7 @@ class Fabric {
     incoming.peer = dc;
     // Deliver to responder via ondatachannel.
     setTimeout(() => {
-      respPc.ondatachannel?.({ channel: incoming } as RTCDataChannelEvent);
+      respPc.ondatachannel?.({ channel: incoming } as unknown as RTCDataChannelEvent);
       dc.open();
       incoming.open();
     }, 0);

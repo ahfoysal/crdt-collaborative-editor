@@ -1,0 +1,8 @@
+{
+  "default": {
+    "owner": "lt-0001",
+    "roles": {
+      "lt-0001": "owner"
+    }
+  }
+}

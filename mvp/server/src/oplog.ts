@@ -23,9 +23,14 @@ export class OpLog {
   private seen = new Set<string>();
   private path: string;
   private writeQueue: Promise<void> = Promise.resolve();
+  /** When set, coalesces appends into a single write per tick. */
+  private readonly coalesceWrites: boolean;
+  private writeScheduled = false;
 
-  constructor(path: string) {
+  constructor(path: string, opts: { coalesceWrites?: boolean } = {}) {
     this.path = path;
+    // Default on — keeps file in sync without rewriting per-op under load.
+    this.coalesceWrites = opts.coalesceWrites ?? true;
   }
 
   private static idKey(op: Op): string {
@@ -71,8 +76,19 @@ export class OpLog {
   }
 
   private schedulePersist(): void {
+    if (this.coalesceWrites) {
+      // Debounce — one write per macrotask, capturing whatever has
+      // accumulated. Burst loads go from O(N) file rewrites to O(1-ish).
+      if (this.writeScheduled) return;
+      this.writeScheduled = true;
+      setImmediate(() => {
+        this.writeScheduled = false;
+        this.writeQueue = this.writeQueue.then(() => this.writeFile());
+        this.writeQueue.catch((err) => console.error('[oplog] persist failed', err));
+      });
+      return;
+    }
     this.writeQueue = this.writeQueue.then(() => this.writeFile());
-    // swallow errors on the chain so one failed write doesn't poison the rest
     this.writeQueue.catch((err) => {
       console.error('[oplog] persist failed', err);
     });

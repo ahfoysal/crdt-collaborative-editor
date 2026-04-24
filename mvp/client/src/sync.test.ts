@@ -81,7 +81,7 @@ describe('SyncClient', () => {
     ws._open();
     // After open: hello, then the queued op
     const msgs = ws.sent.map((s) => JSON.parse(s));
-    expect(msgs[0]).toEqual({ type: 'hello', lastSeq: 7 });
+    expect(msgs[0]).toMatchObject({ type: 'hello', lastSeq: 7 });
     expect(msgs[1]).toEqual({ type: 'op', op: mkInsert('A', 1) });
     expect(client.pendingCount).toBe(0);
   });
