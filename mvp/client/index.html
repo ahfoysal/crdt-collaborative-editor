@@ -6,7 +6,9 @@
     <title>CRDT MVP — Rich-Text Collaborative Editor</title>
     <style>
       :root { color-scheme: light dark; font-family: system-ui, -apple-system, sans-serif; }
-      body { margin: 0; padding: 24px; max-width: 800px; margin-inline: auto; }
+      body { margin: 0; padding: 24px; max-width: 1100px; margin-inline: auto; }
+      .layout { display: grid; grid-template-columns: 1fr 280px; gap: 16px; }
+      @media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }
       h1 { font-size: 18px; margin: 0 0 8px; }
       .meta { font-size: 12px; color: #888; margin-bottom: 12px; }
       .toolbar { display: flex; gap: 4px; margin-bottom: 8px; }
@@ -53,6 +55,28 @@
         cursor: pointer;
       }
       .controls button:hover { background: rgba(128,128,128,0.15); }
+      /* M6: comments + suggestions */
+      .sidebar {
+        border: 1px solid #888;
+        border-radius: 6px;
+        padding: 10px;
+        font-size: 13px;
+        max-height: 70vh;
+        overflow-y: auto;
+      }
+      .sidebar h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; }
+      .thread { border-top: 1px solid rgba(128,128,128,0.3); padding: 6px 0; }
+      .thread:first-of-type { border-top: none; }
+      .thread.resolved { opacity: 0.5; }
+      .thread .range { font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: #888; }
+      .thread .comment { margin: 4px 0; }
+      .thread .author { font-weight: 600; font-size: 11px; }
+      .thread form { display: flex; gap: 4px; margin-top: 4px; }
+      .thread form input { flex: 1; font: inherit; }
+      .sidebar .empty { color: #888; font-style: italic; }
+      #editor .suggest-insert { background: rgba(34,197,94,0.2); text-decoration: underline wavy rgba(34,197,94,0.8); }
+      #editor .suggest-delete { background: rgba(239,68,68,0.2); text-decoration: line-through rgba(239,68,68,0.8); }
+      .toolbar button.mode-on { outline: 2px solid #3b82f6; }
     </style>
   </head>
   <body>
@@ -64,12 +88,25 @@
       <button id="btnBold" type="button" title="Bold (Ctrl/Cmd+B)"><b>B</b></button>
       <button id="btnItalic" type="button" title="Italic (Ctrl/Cmd+I)"><i>I</i></button>
       <button id="btnUnderline" type="button" title="Underline (Ctrl/Cmd+U)"><u>U</u></button>
+      <span style="flex:1"></span>
+      <button id="btnComment" type="button" title="Comment on selection">Comment</button>
+      <button id="btnSuggestMode" type="button" title="Toggle suggestion mode">Suggest</button>
     </div>
-    <div id="editor" contenteditable="true" spellcheck="false"></div>
-    <div class="status"><span id="statusDot" class="dot bad"></span><span id="statusText">connecting…</span></div>
-    <div class="controls">
-      <button id="offlineBtn" type="button">Go offline</button>
-      <button id="resetBtn" type="button" title="Clear IndexedDB and reload">Reset local state</button>
+    <div class="layout">
+      <div>
+        <div id="editor" contenteditable="true" spellcheck="false"></div>
+        <div class="status"><span id="statusDot" class="dot bad"></span><span id="statusText">connecting…</span></div>
+        <div class="controls">
+          <button id="offlineBtn" type="button">Go offline</button>
+          <button id="resetBtn" type="button" title="Clear IndexedDB and reload">Reset local state</button>
+        </div>
+      </div>
+      <aside class="sidebar" id="sidebar">
+        <h3>Comments</h3>
+        <div id="threads" class="empty">No threads yet. Select text and click Comment.</div>
+        <h3 style="margin-top:14px">Suggestions</h3>
+        <div id="suggestions" class="empty">Toggle Suggest to record tentative edits.</div>
+      </aside>
     </div>
     <script type="module" src="/src/main.ts"></script>
   </body>

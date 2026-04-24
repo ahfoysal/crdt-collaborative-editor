@@ -7,7 +7,9 @@
  * the current selection, emit the appropriate insert/delete ops, then
  * re-render. Toolbar buttons call `rt.format(...)` on the selected range.
  */
-import { RichText, type Op, type Attrs } from './richtext';
+import { RichText, type Op, type Attrs, type OpId, type InsertOp } from './richtext';
+import { CommentStore, type CommentOp } from './comments';
+import { SuggestionStore, type SuggestionOp } from './suggestions';
 import {
   getOrCreateClientId,
   getMeta,
@@ -30,6 +32,10 @@ const resetBtn = document.getElementById('resetBtn') as HTMLButtonElement | null
 const btnBold = document.getElementById('btnBold') as HTMLButtonElement;
 const btnItalic = document.getElementById('btnItalic') as HTMLButtonElement;
 const btnUnderline = document.getElementById('btnUnderline') as HTMLButtonElement;
+const btnComment = document.getElementById('btnComment') as HTMLButtonElement | null;
+const btnSuggestMode = document.getElementById('btnSuggestMode') as HTMLButtonElement | null;
+const threadsEl = document.getElementById('threads') as HTMLElement | null;
+const suggestionsEl = document.getElementById('suggestions') as HTMLElement | null;
 
 function setStatus(ok: boolean, text: string) {
   statusDot.className = 'dot ' + (ok ? 'ok' : 'bad');
@@ -235,6 +241,7 @@ async function boot() {
       const attrs = resolveInsertAttrs(rt, start);
       if (text.length > 0) ops.push(...rt.localInsert(start, text, attrs));
       emitOps(ops);
+      (window as any).__onLocalInsert?.(ops);
       const newCaret = start + text.length;
       renderFromCRDT({ start: newCaret, end: newCaret });
       return;
@@ -267,6 +274,12 @@ async function boot() {
         } else {
           return;
         }
+      }
+      // Suggestion mode: record a suggest-delete instead of deleting.
+      const intercepted = (window as any).__interceptLocalDelete?.(delStart, delEnd);
+      if (intercepted) {
+        renderFromCRDT({ start: delEnd, end: delEnd });
+        return;
       }
       const ops = rt.localDelete(delStart, delEnd - delStart);
       emitOps(ops);
@@ -341,6 +354,206 @@ async function boot() {
     btnItalic.classList.toggle('active', !!attrs.italic);
     btnUnderline.classList.toggle('active', !!attrs.underline);
   }
+
+  // --- M6: Comments + Suggestions ---------------------------------------
+  // For the MVP, comment/suggestion ops travel over the existing WebRTC mesh
+  // only (no server persistence for M6 metadata yet). Reloading loses threads;
+  // peers who connect while you're already commenting will see new ops in
+  // real time. This keeps server deltas minimal while the CRDT semantics
+  // (tested independently) are the load-bearing part.
+  const comments = new CommentStore(clientId);
+  const suggestions = new SuggestionStore(clientId);
+  let suggestMode = false;
+
+  function broadcastMeta(kind: 'comment' | 'suggestion', op: CommentOp | SuggestionOp) {
+    // Reuse the mesh's op broadcast channel with a wrapped envelope.
+    // Other peers route unknown-type ops to the meta handler via onPeerOp.
+    mesh.broadcastOp({ __meta: kind, op });
+  }
+
+  // Intercept mesh peer ops for meta envelopes. (We leave the text path alone;
+  // the existing onPeerOp continues to handle standard text ops.)
+  const origOnPeerOp = (m: any) => {
+    if (m && typeof m === 'object' && m.__meta === 'comment') {
+      if (comments.applyRemote(m.op as CommentOp)) renderSidebar();
+      return true;
+    }
+    if (m && typeof m === 'object' && m.__meta === 'suggestion') {
+      if (suggestions.applyRemote(m.op as SuggestionOp)) {
+        renderFromCRDT();
+        renderSidebar();
+      }
+      return true;
+    }
+    return false;
+  };
+  // Monkey-patch mesh's op callback to filter meta envelopes first.
+  const prevCb = (mesh as any).events?.onPeerOp as ((op: unknown, from: string) => void) | undefined;
+  if (prevCb) {
+    (mesh as any).events.onPeerOp = (op: unknown, from: string) => {
+      if (origOnPeerOp(op)) return;
+      prevCb(op, from);
+    };
+  }
+
+  function renderSidebar() {
+    if (threadsEl) {
+      const list = comments.listThreads();
+      if (list.length === 0) {
+        threadsEl.className = 'empty';
+        threadsEl.textContent = 'No threads yet. Select text and click Comment.';
+      } else {
+        threadsEl.className = '';
+        threadsEl.innerHTML = '';
+        for (const t of list) {
+          const div = document.createElement('div');
+          div.className = 'thread' + (t.resolved ? ' resolved' : '');
+          const range = comments.resolveRange(rt, t);
+          const rangeText = range ? `${range.start}–${range.end}` : '?';
+          const head = document.createElement('div');
+          head.className = 'range';
+          head.textContent = `range ${rangeText} · ${t.createdBy}`;
+          div.appendChild(head);
+          for (const c of t.comments) {
+            const cd = document.createElement('div');
+            cd.className = 'comment';
+            cd.innerHTML = `<span class="author"></span> <span class="body"></span>`;
+            cd.querySelector('.author')!.textContent = c.authorId;
+            cd.querySelector('.body')!.textContent = c.text;
+            div.appendChild(cd);
+          }
+          const form = document.createElement('form');
+          const input = document.createElement('input');
+          input.placeholder = 'Reply…';
+          const resolveBtn = document.createElement('button');
+          resolveBtn.type = 'button';
+          resolveBtn.textContent = t.resolved ? 'Reopen' : 'Resolve';
+          resolveBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            const op = comments.localSetResolved(t.id, !t.resolved, clientId);
+            broadcastMeta('comment', op);
+            renderSidebar();
+          });
+          form.appendChild(input);
+          form.appendChild(resolveBtn);
+          form.addEventListener('submit', (e) => {
+            e.preventDefault();
+            const text = input.value.trim();
+            if (!text) return;
+            const op = comments.localAddComment(t.id, clientId, text);
+            broadcastMeta('comment', op);
+            input.value = '';
+            renderSidebar();
+          });
+          div.appendChild(form);
+          threadsEl.appendChild(div);
+        }
+      }
+    }
+    if (suggestionsEl) {
+      const list = suggestions.list();
+      if (list.length === 0) {
+        suggestionsEl.className = 'empty';
+        suggestionsEl.textContent = 'Toggle Suggest to record tentative edits.';
+      } else {
+        suggestionsEl.className = '';
+        suggestionsEl.innerHTML = '';
+        for (const s of list) {
+          const div = document.createElement('div');
+          div.className = 'thread';
+          const hd = document.createElement('div');
+          hd.className = 'range';
+          hd.textContent = `${s.kind} · ${s.authorId} · ${s.status}`;
+          div.appendChild(hd);
+          if (s.status === 'pending') {
+            const accept = document.createElement('button');
+            accept.type = 'button';
+            accept.textContent = 'Accept';
+            accept.addEventListener('click', () => {
+              const { status, textOps } = suggestions.localAccept(s.id, clientId);
+              for (const op of textOps) void sync.submitLocal(op as any);
+              for (const op of textOps) rt.applyRemote(op);
+              broadcastMeta('suggestion', status);
+              renderFromCRDT();
+              renderSidebar();
+            });
+            const reject = document.createElement('button');
+            reject.type = 'button';
+            reject.textContent = 'Reject';
+            reject.addEventListener('click', () => {
+              const { status, textOps } = suggestions.localReject(s.id, clientId);
+              for (const op of textOps) void sync.submitLocal(op as any);
+              for (const op of textOps) rt.applyRemote(op);
+              broadcastMeta('suggestion', status);
+              renderFromCRDT();
+              renderSidebar();
+            });
+            div.appendChild(accept);
+            div.appendChild(reject);
+          }
+          suggestionsEl.appendChild(div);
+        }
+      }
+    }
+  }
+
+  // Button: create a comment thread anchored to the current selection.
+  if (btnComment) {
+    btnComment.addEventListener('mousedown', (e) => e.preventDefault());
+    btnComment.addEventListener('click', () => {
+      const range = getCaretRange();
+      if (!range || range.start === range.end) {
+        alert('Select some text first');
+        return;
+      }
+      const visible = rt.visibleNodes();
+      const startId: OpId | undefined = visible[range.start]?.id;
+      const endId: OpId | undefined = visible[range.end - 1]?.id;
+      if (!startId || !endId) return;
+      const op = comments.localCreateThread(startId, endId, clientId);
+      broadcastMeta('comment', op);
+      const text = prompt('Comment:');
+      if (text && text.trim()) {
+        const cOp = comments.localAddComment(op.id, clientId, text.trim());
+        broadcastMeta('comment', cOp);
+      }
+      renderSidebar();
+    });
+  }
+
+  // Button: toggle suggestion mode. When on, the next localInsert ops are
+  // recorded as suggestions, and delete of a selection becomes a
+  // suggest-delete (no real deletion until accepted).
+  if (btnSuggestMode) {
+    btnSuggestMode.addEventListener('click', () => {
+      suggestMode = !suggestMode;
+      btnSuggestMode.classList.toggle('mode-on', suggestMode);
+      btnSuggestMode.textContent = suggestMode ? 'Suggest (on)' : 'Suggest';
+    });
+  }
+
+  // Expose suggestion hook so the input handler can record inserted-char IDs.
+  (window as any).__onLocalInsert = (ops: Op[]) => {
+    if (!suggestMode) return;
+    const ids = ops.flatMap((o) => (o.type === 'insert' ? [(o as InsertOp).id] : []));
+    if (ids.length === 0) return;
+    const op = suggestions.localSuggestInsert(ids, clientId);
+    broadcastMeta('suggestion', op);
+    renderSidebar();
+  };
+  (window as any).__interceptLocalDelete = (start: number, end: number): boolean => {
+    if (!suggestMode || end <= start) return false;
+    const visible = rt.visibleNodes();
+    const ids: OpId[] = [];
+    for (let i = start; i < end; i++) if (visible[i]) ids.push(visible[i].id);
+    if (ids.length === 0) return false;
+    const op = suggestions.localSuggestDelete(ids, clientId);
+    broadcastMeta('suggestion', op);
+    renderSidebar();
+    return true;
+  };
+
+  renderSidebar();
 
   // Demo controls
   if (offlineBtn) {

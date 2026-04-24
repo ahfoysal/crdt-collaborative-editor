@@ -101,7 +101,7 @@ wss.on('connection', (ws: WebSocket) => {
       }
       clientId = newId;
       sockets.set(newId, ws);
-      sessions.set(ws, { auth, clientId });
+      sessions.set(ws, { auth, clientId: clientId as string });
 
       const missed = log.since(lastSeq);
       ws.send(JSON.stringify({ type: 'sync', ops: missed }));
@@ -114,7 +114,10 @@ wss.on('connection', (ws: WebSocket) => {
     }
 
     const session = sessions.get(ws);
-    if (!session) return; // must hello first
+    if (!session) {
+      if (process.env.DEBUG_DROPS) console.log('[drop] no session for', msg.type);
+      return; // must hello first
+    }
 
     if (msg.type === 'op' && msg.op && msg.op.id) {
       if (!perms.canWrite(DOC_ID, session.auth.sub)) {
@@ -122,7 +125,10 @@ wss.on('connection', (ws: WebSocket) => {
         return;
       }
       const entry = log.append(msg.op as Op);
-      if (!entry) return;
+      if (!entry) {
+        if (process.env.DEBUG_DROPS) console.log('[dup]', (msg.op as any).id);
+        return;
+      }
       const out = JSON.stringify({ type: 'op', seq: entry.seq, op: entry.op });
       for (const client of wss.clients) {
         if (client.readyState === WebSocket.OPEN) client.send(out);

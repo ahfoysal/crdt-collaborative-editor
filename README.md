@@ -30,7 +30,8 @@ See [`mvp/README.md`](./mvp/README.md) for details.
 - **M2 (Week 2):** Offline queue + reconnect merge + IndexedDB — shipped
 - **M3 (Week 4):** Rich text via Y.Text-compatible CRDT + contenteditable — shipped
 - **M4 (Week 6):** Presence (cursors, selections) + WebRTC P2P
-- **M5 (Week 8):** Version history + permissions + 100-user load test
+- **M5 (Week 8):** Version history + permissions + 100-user load test — shipped
+- **M6 (Week 10):** CRDT-native comments + track-changes suggestions — shipped
 
 ## M3 Status — shipped
 
@@ -66,6 +67,62 @@ insert attribute inheritance, format idempotency, and format-survives-delete.
 cd mvp/client && npm install && npm test    # 17/17 passing
 cd mvp/client && npm run dev                 # live demo (server on :8787)
 ```
+
+## M6 Status — shipped
+
+Comments and track-changes suggestions ship as two new CRDT modules, both
+independent of the text CRDT so they can evolve without destabilising M1–M5.
+
+### Comments ([`mvp/client/src/comments.ts`](./mvp/client/src/comments.ts))
+- Threads anchor to a pair of **RGA character IDs** (`startId`, `endId`), not
+  to offsets. Because RGA character IDs are immutable — deletes only tombstone
+  the node — the anchor is stable across concurrent edits around, inside, or
+  across the range.
+- Three op types: `thread:create`, `thread:comment`, `thread:resolve`. Comment
+  lists are keyed sets (dedupe by op id); resolve is a per-thread LWW register.
+- `resolveRange(rt, thread)` walks the RGA flat order and returns the current
+  visible `[start, end)` for the thread. If the range is fully deleted it
+  collapses to a zero-width caret at the start anchor's position.
+
+### Suggestions ([`mvp/client/src/suggestions.ts`](./mvp/client/src/suggestions.ts))
+- "Track changes" mode. A `SuggestionStore` records tentative edits as
+  metadata alongside the text CRDT:
+  - **Suggested insert:** the chars enter RGA normally, but their IDs are
+    recorded against a suggestion. Reject emits deletes for those IDs; accept
+    is a no-op on text.
+  - **Suggested delete:** target char IDs are recorded; text is left alone.
+    Accept emits real deletes; reject is a no-op on text.
+- Status (`pending | accepted | rejected`) is a per-suggestion LWW register —
+  so a concurrent accept+reject converges deterministically across peers.
+
+### Server regressions fixed
+- `server/src/index.ts` line 104 — `clientId` was `string | null`; cast to
+  `string` after assignment on the line above.
+- `oplog.ts#flush` — under coalesced writes, pending data queued via
+  `setImmediate` could miss `flush()` because it had not yet been chained
+  onto `writeQueue`. `flush()` now force-flushes scheduled writes before
+  awaiting the queue, fixing the `oplog.test.ts "persists to disk and reloads"`
+  failure.
+
+### Tests
+- [`comments.test.ts`](./mvp/client/src/comments.test.ts): anchors survive
+  concurrent inserts on both sides, collapse (but survive) when range is
+  deleted, multi-author comment threads converge, resolve LWW under concurrent
+  toggles, duplicate op replay is a no-op.
+- [`suggestions.test.ts`](./mvp/client/src/suggestions.test.ts): insert
+  accept/reject, delete accept/reject, concurrent accept+reject converges by
+  LWW, remote replay is idempotent.
+
+```bash
+cd mvp/client && npm test    # 40/40 passing (was 28)
+cd mvp/server && npm test    # 12/12 passing (was 11/12)
+```
+
+The UI adds a **Comment** button (select text, click) and a **Suggest** toggle
+in the toolbar, plus a right-hand sidebar showing threads and pending
+suggestions with accept/reject buttons. Comment/suggestion ops currently
+travel over the existing WebRTC mesh only; server-side persistence for M6
+metadata is a follow-up.
 
 ## Key References
 - Yjs internals (Kevin Jahns talks)

@@ -95,6 +95,14 @@ export class OpLog {
   }
 
   async flush(): Promise<void> {
+    // If a coalesced write is scheduled on setImmediate but hasn't yet been
+    // chained onto writeQueue, force-flush it synchronously. Otherwise
+    // awaiting writeQueue returns the already-resolved Promise and misses
+    // the pending data.
+    if (this.writeScheduled) {
+      this.writeScheduled = false;
+      this.writeQueue = this.writeQueue.then(() => this.writeFile());
+    }
     await this.writeQueue;
   }
 
