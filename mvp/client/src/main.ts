@@ -15,11 +15,16 @@ import {
   clearAll,
 } from './persistence';
 import { SyncClient } from './sync';
+import { Presence, type PresenceState } from './presence';
+import { WebRtcMesh } from './webrtc';
 
 const editor = document.getElementById('editor') as HTMLElement;
 const statusDot = document.getElementById('statusDot')!;
 const statusText = document.getElementById('statusText')!;
 const clientIdEl = document.getElementById('clientId') as HTMLElement;
+const transportEl = document.getElementById('transport') as HTMLElement | null;
+const peersEl = document.getElementById('peers') as HTMLElement | null;
+const cursorLayer = document.getElementById('cursorLayer') as HTMLElement | null;
 const offlineBtn = document.getElementById('offlineBtn') as HTMLButtonElement | null;
 const resetBtn = document.getElementById('resetBtn') as HTMLButtonElement | null;
 const btnBold = document.getElementById('btnBold') as HTMLButtonElement;
@@ -53,6 +58,37 @@ async function boot() {
 
   renderFromCRDT();
 
+  // Presence + WebRTC (M4). The mesh carries ops peer-to-peer when possible;
+  // the server is used for signaling, persistence, and fallback delivery.
+  const presence = new Presence(clientId, {
+    onBroadcast: (state) => {
+      sync.sendPresence(state);
+      mesh.broadcastPresence(state);
+    },
+    onChange: () => renderPresenceOverlay(),
+  });
+
+  const mesh = new WebRtcMesh(clientId, {
+    onPeerOp: (op) => {
+      const changed = rt.applyRemote(op as Op);
+      if (changed) renderFromCRDT();
+    },
+    onPeerPresence: (state) => {
+      presence.applyRemote(state as PresenceState);
+    },
+    onConnectivityChange: (n, ids) => {
+      if (transportEl) {
+        transportEl.textContent = n > 0
+          ? `Connected via P2P (${n} peer${n === 1 ? '' : 's'})`
+          : 'Via server';
+      }
+      if (peersEl) peersEl.textContent = ids.length ? `peers: ${ids.join(', ')}` : '';
+    },
+    sendSignal: (to, data) => sync.sendSignal(to, data),
+  });
+  // Initialise transport indicator.
+  if (transportEl) transportEl.textContent = 'Via server';
+
   const sync = new SyncClient(
     `ws://${location.hostname}:8787`,
     lastSeq,
@@ -63,7 +99,25 @@ async function boot() {
         const changed = rt.applyRemote(op as Op);
         if (changed) renderFromCRDT();
       },
+      onPresence: (state) => {
+        presence.applyRemote(state as PresenceState);
+      },
+      onPeers: (peerIds) => {
+        void mesh.setPeerList(peerIds);
+        // Broadcast our current state so new peers see us.
+        presence.broadcastNow();
+      },
+      onPeerJoin: (peerId) => {
+        void mesh.onPeerJoin(peerId);
+        presence.broadcastNow();
+      },
+      onPeerLeave: (peerId) => {
+        mesh.onPeerLeave(peerId);
+        presence.drop(peerId);
+      },
+      onSignal: (env) => { void mesh.onSignal(env); },
     },
+    clientId,
   );
   sync.connect();
 
@@ -77,6 +131,86 @@ async function boot() {
     }
     if (sel) setCaretRange(sel.start, sel.end);
     syncToolbarState();
+    renderPresenceOverlay();
+  }
+
+  /**
+   * Render remote cursors + selections as absolutely-positioned overlays on
+   * top of the editor. Each peer is drawn as a colored caret bar with an
+   * optional name label, plus a translucent rect for any selection.
+   */
+  function renderPresenceOverlay() {
+    if (!cursorLayer) return;
+    cursorLayer.innerHTML = '';
+    const editorRect = editor.getBoundingClientRect();
+    const layerRect = cursorLayer.getBoundingClientRect();
+    const dx = editorRect.left - layerRect.left;
+    const dy = editorRect.top - layerRect.top;
+
+    for (const peer of presence.getRemotes()) {
+      if (peer.head == null) continue;
+      const start = Math.min(peer.anchor ?? peer.head, peer.head);
+      const end = Math.max(peer.anchor ?? peer.head, peer.head);
+      // Selection rectangles
+      if (end > start) {
+        const rects = rectsForRange(start, end);
+        for (const r of rects) {
+          const box = document.createElement('div');
+          box.className = 'remote-selection';
+          box.style.left = `${r.left - editorRect.left + dx}px`;
+          box.style.top = `${r.top - editorRect.top + dy}px`;
+          box.style.width = `${r.width}px`;
+          box.style.height = `${r.height}px`;
+          box.style.background = peer.color;
+          box.style.opacity = '0.25';
+          cursorLayer.appendChild(box);
+        }
+      }
+      // Caret
+      const caret = rectForOffset(peer.head);
+      if (!caret) continue;
+      const bar = document.createElement('div');
+      bar.className = 'remote-caret';
+      bar.style.left = `${caret.left - editorRect.left + dx}px`;
+      bar.style.top = `${caret.top - editorRect.top + dy}px`;
+      bar.style.height = `${caret.height}px`;
+      bar.style.background = peer.color;
+      const label = document.createElement('span');
+      label.className = 'remote-caret-label';
+      label.textContent = peer.name;
+      label.style.background = peer.color;
+      bar.appendChild(label);
+      cursorLayer.appendChild(bar);
+    }
+  }
+
+  /** Viewport-relative rect for the visible character at offset (zero-width). */
+  function rectForOffset(offset: number): DOMRect | null {
+    const pos = locate(offset);
+    if (!pos) return null;
+    const range = document.createRange();
+    try {
+      range.setStart(pos.node, pos.offset);
+      range.setEnd(pos.node, pos.offset);
+    } catch { return null; }
+    const rects = range.getClientRects();
+    if (rects.length > 0) return rects[0];
+    // Collapsed ranges in empty elements return no rects — fall back to
+    // the editor's own bounding box for a top-left caret.
+    const r = editor.getBoundingClientRect();
+    return new DOMRect(r.left + 4, r.top + 4, 0, 16);
+  }
+
+  function rectsForRange(start: number, end: number): DOMRectList | DOMRect[] {
+    const s = locate(start);
+    const e = locate(end);
+    if (!s || !e) return [];
+    const range = document.createRange();
+    try {
+      range.setStart(s.node, s.offset);
+      range.setEnd(e.node, e.offset);
+    } catch { return []; }
+    return range.getClientRects();
   }
 
   function emitOps(ops: Op[]) {

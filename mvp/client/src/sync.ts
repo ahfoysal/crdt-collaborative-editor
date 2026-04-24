@@ -31,11 +31,22 @@ import { persistOp, setMeta, type StoredOp } from './persistence';
 export type SyncEvents = {
   onRemoteOp: (op: Op) => void;
   onStatus: (connected: boolean, text: string) => void;
+  /** Presence update from another client (ephemeral). */
+  onPresence?: (state: any) => void;
+  /** Current peer list, sent once after hello. */
+  onPeers?: (peers: string[]) => void;
+  /** A new peer joined. */
+  onPeerJoin?: (clientId: string) => void;
+  /** A peer disconnected. */
+  onPeerLeave?: (clientId: string) => void;
+  /** Inbound WebRTC signaling envelope. */
+  onSignal?: (env: { from: string; to: string; data: unknown }) => void;
 };
 
 export class SyncClient {
   private ws: WebSocket | null = null;
   private url: string;
+  private clientId: string;
   private events: SyncEvents;
 
   /** Highest server-assigned seq we've applied + persisted. */
@@ -48,11 +59,18 @@ export class SyncClient {
   private backoff = 500;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-  constructor(url: string, lastSeq: number, pendingOutbox: Op[], events: SyncEvents) {
+  constructor(
+    url: string,
+    lastSeq: number,
+    pendingOutbox: Op[],
+    events: SyncEvents,
+    clientId: string = '',
+  ) {
     this.url = url;
     this.lastSeq = lastSeq;
     this.outbox = [...pendingOutbox];
     this.events = events;
+    this.clientId = clientId;
   }
 
   connect(): void {
@@ -63,7 +81,7 @@ export class SyncClient {
     ws.onopen = () => {
       this.backoff = 500;
       this.events.onStatus(true, 'connected');
-      ws.send(JSON.stringify({ type: 'hello', lastSeq: this.lastSeq }));
+      ws.send(JSON.stringify({ type: 'hello', lastSeq: this.lastSeq, clientId: this.clientId }));
       this.flushOutbox();
     };
 
@@ -110,6 +128,30 @@ export class SyncClient {
       }
     } else if (msg.type === 'op' && typeof msg.seq === 'number' && msg.op) {
       await this.ingestRemote(msg.seq, msg.op as Op);
+    } else if (msg.type === 'presence' && msg.state) {
+      this.events.onPresence?.(msg.state);
+    } else if (msg.type === 'peers' && Array.isArray(msg.peers)) {
+      this.events.onPeers?.(msg.peers);
+    } else if (msg.type === 'peer-join' && typeof msg.clientId === 'string') {
+      this.events.onPeerJoin?.(msg.clientId);
+    } else if (msg.type === 'peer-leave' && typeof msg.clientId === 'string') {
+      this.events.onPeerLeave?.(msg.clientId);
+    } else if (msg.type === 'signal' && typeof msg.from === 'string') {
+      this.events.onSignal?.({ from: msg.from, to: msg.to, data: msg.data });
+    }
+  }
+
+  /** Ephemeral presence broadcast via the server (never persisted). */
+  sendPresence(state: unknown): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'presence', state }));
+    }
+  }
+
+  /** Route a WebRTC signaling payload to a specific peer via the server. */
+  sendSignal(to: string, data: unknown): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'signal', to, data }));
     }
   }
 
