@@ -5,3 +5,13 @@ dist/
 .vite/
 mvp/server/oplog.json
 mvp/server/oplog.json.tmp
+mvp/server/history.json
+mvp/server/perms.json
+mvp/server/loadtest-*.json
+mvp/server/loadtest-*.json.tmp
+mvp/server/lt*.json
+mvp/server/lt*.json.tmp
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore
+branch_structure.json

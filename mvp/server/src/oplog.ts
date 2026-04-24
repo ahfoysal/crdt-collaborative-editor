@@ -79,13 +79,21 @@ export class OpLog {
     if (this.coalesceWrites) {
       // Debounce — one write per macrotask, capturing whatever has
       // accumulated. Burst loads go from O(N) file rewrites to O(1-ish).
+      // The setImmediate is chained *onto* writeQueue so flush() awaiting
+      // writeQueue is guaranteed to await the pending write too.
       if (this.writeScheduled) return;
       this.writeScheduled = true;
-      setImmediate(() => {
-        this.writeScheduled = false;
-        this.writeQueue = this.writeQueue.then(() => this.writeFile());
-        this.writeQueue.catch((err) => console.error('[oplog] persist failed', err));
-      });
+      this.writeQueue = this.writeQueue.then(
+        () => new Promise<void>((resolve) => {
+          setImmediate(() => {
+            this.writeScheduled = false;
+            this.writeFile().then(resolve, (err) => {
+              console.error('[oplog] persist failed', err);
+              resolve();
+            });
+          });
+        }),
+      );
       return;
     }
     this.writeQueue = this.writeQueue.then(() => this.writeFile());
@@ -95,14 +103,8 @@ export class OpLog {
   }
 
   async flush(): Promise<void> {
-    // If a coalesced write is scheduled on setImmediate but hasn't yet been
-    // chained onto writeQueue, force-flush it synchronously. Otherwise
-    // awaiting writeQueue returns the already-resolved Promise and misses
-    // the pending data.
-    if (this.writeScheduled) {
-      this.writeScheduled = false;
-      this.writeQueue = this.writeQueue.then(() => this.writeFile());
-    }
+    // writeQueue already includes any coalesced work because schedulePersist
+    // chains the setImmediate onto it rather than orphaning it.
     await this.writeQueue;
   }
 
